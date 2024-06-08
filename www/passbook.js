@@ -70,6 +70,21 @@ passbook.downloadPasses = function (callData, passCallback, errorCallback) {
         }
     }, errorCallback, "Passbook", "downloadPasses", [callData]);
 };
+
+/**
+ *
+ * @param {(string|{url: string, headers?: Object})}  callData
+ * @param {Function} passCallback
+ * @param {Function} errorCallback
+ */
+passbook.downloadPassesByHeader = function (callData, passCallback, errorCallback) {
+    exec(function (result) {
+        if (typeof(passCallback) === 'function') {
+            var passes = result.passes;
+            passCallback(toPassArray(passes), result.added);
+        }
+    }, errorCallback, "Passbook", "downloadPassesByHeader", [callData]);
+};
                
 
 /**
