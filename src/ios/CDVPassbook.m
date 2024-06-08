@@ -29,6 +29,10 @@ typedef void (^AddPassesResultBlock)(NSArray<PKPass *> *passes, BOOL added);
                headers:(NSDictionary * _Nullable)headers
                success:(AddPassesResultBlock)successBlock
                  error:(void (^)(NSError *error))errorBlock;
+- (void)downloadPassesByHeader:(NSURL*) url
+            headers:(NSDictionary * _Nullable)headers
+            success:(AddPassesResultBlock)successBlock
+              error:(void (^)(NSError *error))errorBlock;
 - (void)tryAddPass:(NSData*)data success:(AddPassResultBlock)successBlock error:(void (^)(NSError *error))errorBlock;
 - (UIViewController*) getTopMostViewController;
 
@@ -134,6 +138,44 @@ typedef void (^AddPassesResultBlock)(NSArray<PKPass *> *passes, BOOL added);
     }
     
     [self downloadPasses:urls headers:headers success:^(NSArray<PKPass*> *passes, BOOL added){
+        [self sendPassesResult:passes added:added command:command];
+    } error:^(NSError *error) {
+        [self sendError:error command:command];
+    }];
+}
+
+- (void)downloadPassesByHeader:(CDVInvokedUrlCommand*)command
+{
+    if(![self ensureAvailability:command]) {
+        return;
+    }
+
+    id callData = [command argumentAtIndex:0];
+
+    NSString *urlString;
+    NSDictionary *headers;
+
+    if ([callData isKindOfClass:[NSDictionary class]]) {
+        urlString = callData[@"url"];
+        headers = callData[@"headers"];
+    } else if ([callData isKindOfClass:[NSArray class]]) {
+        urlString = callData[0];
+    }
+
+    if(!urlString) {
+        CDVPluginResult *commandResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"requires single argument of url strings or objects with 'url' property"];
+        [self.commandDelegate sendPluginResult:commandResult callbackId:command.callbackId];
+        return;
+    }
+
+    NSURL* url = [NSURL URLWithString:urlString];
+    if(!url) {
+        CDVPluginResult *commandResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_MALFORMED_URL_EXCEPTION messageAsString:[NSString stringWithFormat:@"malformed url: %@", urlString]];
+        [self.commandDelegate sendPluginResult:commandResult callbackId:command.callbackId];
+        return;
+    }
+
+    [self downloadPassesByHeader:url headers:headers success:^(NSArray<PKPass*> *passes, BOOL added){
         [self sendPassesResult:passes added:added command:command];
     } error:^(NSError *error) {
         [self sendError:error command:command];
@@ -404,6 +446,56 @@ typedef void (^AddPassesResultBlock)(NSArray<PKPass *> *passes, BOOL added);
     }];
     
     for (NSURL *url in urls) {
+        NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:^{
+            NSURLRequest *request = [[NSURLRequest alloc] initWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:20.0];
+            NSURLSessionDataTask* task = [session dataTaskWithRequest:request completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+                if (error) {
+                    if (errorBlock) {
+                        errorBlock(error);
+                    }
+                    [queue cancelAllOperations];
+                } else {
+                    [arrayLock lock];
+                    [passes addObject:data];
+                    [arrayLock unlock];
+                };
+            }];
+            [task resume];
+        }];
+        [completionOperation addDependency:operation];
+    }
+    [queue addOperations:completionOperation.dependencies waitUntilFinished:NO];
+    [queue addOperation:completionOperation];
+}
+
+- (void)downloadPassesByHeader:((NSURL*) url headers:(NSDictionary * _Nullable)headers success:(AddPassesResultBlock)successBlock error:(void (^)(NSError *error))errorBlock
+{
+    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
+    if (!headers) {
+            configuration.HTTPAdditionalHeaders = @{
+                UserAgentHeader: PasskitAgentHeader
+            };
+    }
+
+    NSOperationQueue *queue = [[NSOperationQueue alloc] init];
+    queue.maxConcurrentOperationCount = 4;
+
+    NSLock *arrayLock = [[NSLock alloc] init];
+    NSMutableArray<NSData*> *passes = [NSMutableArray arrayWithCapacity:[urls count]];
+    NSBlockOperation *completionOperation = [NSBlockOperation blockOperationWithBlock:^{
+        [[NSOperationQueue mainQueue] addOperationWithBlock:^{
+            [self tryAddPasses:passes success: successBlock error:errorBlock];
+        }];
+    }];
+
+    // multiPassData
+    NSArray<NSString*> *multiPassData = [headers valueForKey:@"multiPassData"];
+    for (NSString *passData in multiPassData) {
+
+        // header
+        configuration.HTTPAdditionalHeaders = [NSDictionary dictionaryWithObject:passData forKey:@"passbookdata"];
+        [configuration.HTTPAdditionalHeaders setValue:PasskitAgentHeader forKey:UserAgentHeader];
+
         NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:^{
             NSURLRequest *request = [[NSURLRequest alloc] initWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:20.0];
             NSURLSessionDataTask* task = [session dataTaskWithRequest:request completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
